@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/buger/jsonparser"
 	"github.com/gorilla/mux"
 	"github.com/heroku/docker-registry-client/registry"
-	"golang.org/x/exp/maps"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -17,43 +16,34 @@ import (
 	"time"
 )
 
-var (
-	dockerCredentials = map[string]dockerCredential{}
-	imageUrl          = regexp.MustCompile("([^/]+)/([^:]+):(\\w+)")
-	registryClients   = map[string]*registry.Registry{}
+const (
+	dns1123LabelFmt       string = "[a-z0-9]([-a-z0-9]*[a-z0-9])?"
+	dNS1123LabelMaxLength int    = 63
+	labelValueFmt                = "(" + qualifiedNameFmt + ")?"
+	labelValueMaxLength   int    = 63
+	qnameCharFmt          string = "[A-Za-z0-9]"
+	qnameExtCharFmt       string = "[-A-Za-z0-9_.]"
+	qualifiedNameFmt             = "(" + qnameCharFmt + qnameExtCharFmt + "*)?" + qnameCharFmt
 )
 
-type dockerCredential struct {
-	username string
-	password string
-}
+var (
+	dns1123LabelRegexp = regexp.MustCompile("^" + dns1123LabelFmt + "$")
+	imageUrl           = regexp.MustCompile("([^/]+)/([^:]+):(\\S+)")
+	labelValueRegexp   = regexp.MustCompile("^" + labelValueFmt + "$")
+	registryClients    = map[string]*registry.Registry{}
+)
 
 func getImageLabels(podImage string) (map[string]string, error) {
 	podImageMatch := imageUrl.FindStringSubmatch(podImage)
 	if podImageMatch == nil {
-		return nil, fmt.Errorf("invalid image format %v", podImage)
+		return nil, fmt.Errorf("cannot parse image name %v", podImage)
 	}
 	registryHost := podImageMatch[1]
-	if registryHost == "" {
-		registryHost = "registry-1.docker.io"
-	}
 	repository := podImageMatch[2]
 	reference := podImageMatch[3]
-	url := "https://" + registryHost
 	hub, ok := registryClients[registryHost]
 	if !ok {
-		log.Println("Creating registry client for", registryHost)
-		var username, password string
-		if creds, ok := dockerCredentials[registryHost]; ok {
-			username = creds.username
-			password = creds.password
-		}
-		var err error
-		hub, err = registry.New(url, username, password)
-		if err != nil {
-			return nil, err
-		}
-		registryClients[registryHost] = hub
+		return map[string]string{}, nil
 	}
 	manifest, err := hub.ManifestV2(repository, reference)
 	if err != nil {
@@ -63,19 +53,18 @@ func getImageLabels(podImage string) (map[string]string, error) {
 	if reader != nil {
 		defer reader.Close()
 	}
-	buf := new(bytes.Buffer)
-	_, err = buf.ReadFrom(reader)
+	image, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
-	image := buf.Bytes()
 	return getMap(image, "config", "Labels")
 }
 
 func getMap(data []byte, keys ...string) (map[string]string, error) {
 	raw, _, _, err := jsonparser.Get(data, keys...)
 	if err != nil {
-		return nil, err
+		log.Println(string(data))
+		return nil, fmt.Errorf("error getting %v %v", keys, err)
 	}
 	var m map[string]string
 	err = json.Unmarshal(raw, &m)
@@ -87,50 +76,62 @@ func getMap(data []byte, keys ...string) (map[string]string, error) {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	// Read pod
-	buf := new(bytes.Buffer)
-	_, err := buf.ReadFrom(r.Body)
+	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	pod := buf.Bytes()
-	podImage, err := jsonparser.GetString(pod, "spec", "containers", "[0]", "image")
+	podImage, err := jsonparser.GetString(body, "object", "spec", "containers", "[0]", "image")
 	if err != nil {
-		log.Println(err.Error())
+		log.Println("error getting spec/containers[0]/image", err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Get labels
 	imageLabels, err := getImageLabels(podImage)
 	if err != nil {
 		log.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	podLabels, err := getMap(pod, "metadata", "labels")
+	// Filter labels
+	for k, v := range imageLabels {
+		if !isValidLabelKey(k) || !isValidLabelValue(v) {
+			delete(imageLabels, k)
+		}
+	}
+	// Return new labels
+	response, err := json.Marshal(map[string]map[string]string{
+		"labels": imageLabels,
+	})
 	if err != nil {
 		log.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Merge labels
-	maps.Copy(podLabels, imageLabels)
-	// Save back to pod
-	podLabelsRaw, err := json.Marshal(podLabels)
-	if err != nil {
-		log.Println(err.Error())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	pod, err = jsonparser.Set(pod, podLabelsRaw, "metadata", "labels")
-	if err != nil {
-		log.Println(err.Error())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Return pod
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, string(pod))
+	fmt.Fprintln(w, string(response))
+}
+
+func isValidLabelKey(value string) bool {
+	if len(value) > dNS1123LabelMaxLength {
+		return false
+	}
+	if !dns1123LabelRegexp.MatchString(value) {
+		return false
+	}
+	return true
+}
+
+func isValidLabelValue(value string) bool {
+	if len(value) > labelValueMaxLength {
+		return false
+	}
+	if !labelValueRegexp.MatchString(value) {
+		return false
+	}
+	return true
 }
 
 func parseDockerCredentials() error {
@@ -142,6 +143,8 @@ func parseDockerCredentials() error {
 }
 
 func parseDockerCredential(key []byte, value []byte, _ jsonparser.ValueType, _ int) error {
+	reg := string(key)
+	log.Println("logging into registry", reg)
 	raw, err := jsonparser.GetString(value, "auth")
 	if err != nil {
 		return err
@@ -154,7 +157,12 @@ func parseDockerCredential(key []byte, value []byte, _ jsonparser.ValueType, _ i
 	if len(s) != 2 {
 		return fmt.Errorf("invalid credential format, should be username:password base64 encoded")
 	}
-	dockerCredentials[string(key)] = dockerCredential{s[0], s[1]}
+	hub, err := registry.New("https://"+reg, s[0], s[1])
+	if err != nil {
+		log.Println("error creating registry client", err)
+		log.Println("will skip label queries for", reg)
+	}
+	registryClients[reg] = hub
 	return nil
 }
 
@@ -179,6 +187,6 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
-	log.Println("Listening on", addr)
+	log.Println("listening on", addr)
 	log.Fatal(srv.ListenAndServe())
 }
