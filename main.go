@@ -18,29 +18,14 @@ import (
 )
 
 var (
-	imageUrl        = regexp.MustCompile("([^/]??)/?([^:]+):(\\w+)")
-	registryClients = map[string]*registry.Registry{}
+	dockerCredentials = map[string]dockerCredential{}
+	imageUrl          = regexp.MustCompile("([^/]+)/([^:]+):(\\w+)")
+	registryClients   = map[string]*registry.Registry{}
 )
 
-func dockerCredentials(server string) (string, string, error) {
-	dockerconfig, err := os.ReadFile(".dockerconfigjson")
-	if err != nil {
-		return "", "", err
-	}
-	raw, err := jsonparser.GetString(dockerconfig, "auths", server, "auth")
-	if raw == "" {
-		log.Println("Using empty credentials for", server)
-		return "", "", nil
-	}
-	decoded, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil {
-		return "", "", err
-	}
-	s := strings.Split(string(decoded), ":")
-	if len(s) != 2 {
-		return "", "", fmt.Errorf("invalid credential format, should be username:password base64 encoded")
-	}
-	return s[0], s[1], nil
+type dockerCredential struct {
+	username string
+	password string
 }
 
 func getImageLabels(podImage string) (map[string]string, error) {
@@ -58,10 +43,12 @@ func getImageLabels(podImage string) (map[string]string, error) {
 	hub, ok := registryClients[registryHost]
 	if !ok {
 		log.Println("Creating registry client for", registryHost)
-		username, password, err := dockerCredentials(registryHost)
-		if err != nil {
-			return nil, err
+		var username, password string
+		if creds, ok := dockerCredentials[registryHost]; ok {
+			username = creds.username
+			password = creds.password
 		}
+		var err error
 		hub, err = registry.New(url, username, password)
 		if err != nil {
 			return nil, err
@@ -146,16 +133,45 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, string(pod))
 }
 
+func parseDockerCredentials() error {
+	dockerconfig, err := os.ReadFile(".dockerconfigjson")
+	if err != nil {
+		return err
+	}
+	return jsonparser.ObjectEach(dockerconfig, parseDockerCredential, "auths")
+}
+
+func parseDockerCredential(key []byte, value []byte, _ jsonparser.ValueType, _ int) error {
+	raw, err := jsonparser.GetString(value, "auth")
+	if err != nil {
+		return err
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return err
+	}
+	s := strings.Split(string(decoded), ":")
+	if len(s) != 2 {
+		return fmt.Errorf("invalid credential format, should be username:password base64 encoded")
+	}
+	dockerCredentials[string(key)] = dockerCredential{s[0], s[1]}
+	return nil
+}
+
 func ping(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "OK")
 }
 
 func main() {
+	err := parseDockerCredentials()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 	r := mux.NewRouter()
 	r.HandleFunc("/", handler).Methods("POST")
 	r.HandleFunc("/ping", ping)
-	addr := "127.0.0.1:8000"
+	addr := ":8000"
 	srv := &http.Server{
 		Handler: r,
 		Addr:    addr,
