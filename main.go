@@ -7,6 +7,7 @@ import (
 	"github.com/buger/jsonparser"
 	"github.com/gorilla/mux"
 	"github.com/heroku/docker-registry-client/registry"
+	parser "github.com/novln/docker-parser"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -28,36 +29,32 @@ const (
 
 var (
 	dns1123LabelRegexp = regexp.MustCompile("^" + dns1123LabelFmt + "$")
-	imageUrl           = regexp.MustCompile("([^/]+)/([^:]+):(\\S+)")
 	labelValueRegexp   = regexp.MustCompile("^" + labelValueFmt + "$")
 	registryClients    = map[string]*registry.Registry{}
 )
 
 func getImageLabels(podImage string) (map[string]string, error) {
-	podImageMatch := imageUrl.FindStringSubmatch(podImage)
-	if podImageMatch == nil {
-		return nil, fmt.Errorf("cannot parse image name %v", podImage)
+	image, err := parser.Parse(podImage)
+	if err != nil {
+		return nil, err
 	}
-	registryHost := podImageMatch[1]
-	repository := podImageMatch[2]
-	reference := podImageMatch[3]
-	hub, ok := registryClients[registryHost]
+	hub, ok := registryClients[image.Registry()]
 	if !ok {
 		return map[string]string{}, nil
 	}
-	manifest, err := hub.ManifestV2(repository, reference)
+	manifest, err := hub.ManifestV2(image.ShortName(), image.Tag())
 	if err != nil {
 		return nil, err
 	}
-	reader, err := hub.DownloadBlob(repository, manifest.Config.Digest)
+	reader, err := hub.DownloadBlob(image.ShortName(), manifest.Config.Digest)
 	if reader != nil {
 		defer reader.Close()
 	}
-	image, err := ioutil.ReadAll(reader)
+	layer, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
-	return getMap(image, "config", "Labels")
+	return getMap(layer, "config", "Labels")
 }
 
 func getMap(data []byte, keys ...string) (map[string]string, error) {

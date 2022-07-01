@@ -7,7 +7,7 @@ require github.com/buger/jsonparser v1.1.1
 require (
 	github.com/gorilla/mux v1.8.0
 	github.com/heroku/docker-registry-client v0.0.0-20211012143308-9463674c8930
-	golang.org/x/exp v0.0.0-20220613132600-b0d781184e0d
+	github.com/novln/docker-parser v1.0.0
 )
 
 require (
