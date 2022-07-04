@@ -19,20 +19,23 @@ import (
 )
 
 const (
-	dns1123LabelFmt       string = "[a-z0-9]([-a-z0-9]*[a-z0-9])?"
-	dNS1123LabelMaxLength int    = 63
-	labelValueFmt                = "(" + qualifiedNameFmt + ")?"
-	labelValueMaxLength   int    = 63
-	qnameCharFmt          string = "[A-Za-z0-9]"
-	qnameExtCharFmt       string = "[-A-Za-z0-9_.]"
-	qualifiedNameFmt             = "(" + qnameCharFmt + qnameExtCharFmt + "*)?" + qnameCharFmt
+	dns1123LabelFmt           string = "[a-z0-9]([-a-z0-9]*[a-z0-9])?"
+	dns1123SubdomainFmt              = dns1123LabelFmt + "(\\." + dns1123LabelFmt + ")*"
+	dNS1123SubdomainMaxLength int    = 253
+	labelValueFmt                    = "(" + qualifiedNameFmt + ")?"
+	labelValueMaxLength       int    = 63
+	qnameCharFmt              string = "[A-Za-z0-9]"
+	qnameExtCharFmt           string = "[-A-Za-z0-9_.]"
+	qualifiedNameFmt                 = "(" + qnameCharFmt + qnameExtCharFmt + "*)?" + qnameCharFmt
+	qualifiedNameMaxLength    int    = 63
 )
 
 var (
-	labelCache         = cache.New(5*time.Minute, 10*time.Minute)
-	dns1123LabelRegexp = regexp.MustCompile("^" + dns1123LabelFmt + "$")
-	labelValueRegexp   = regexp.MustCompile("^" + labelValueFmt + "$")
-	registryClients    = map[string]*registry.Registry{}
+	dns1123SubdomainRegexp = regexp.MustCompile("^" + dns1123SubdomainFmt + "$")
+	labelCache             = cache.New(5*time.Minute, 10*time.Minute)
+	labelValueRegexp       = regexp.MustCompile("^" + labelValueFmt + "$")
+	qualifiedNameRegexp    = regexp.MustCompile("^" + qualifiedNameFmt + "$")
+	registryClients        = map[string]*registry.Registry{}
 )
 
 func getImageLabels(podImage string) (map[string]string, error) {
@@ -103,7 +106,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 	// Filter labels
 	for k, v := range imageLabels {
-		if !isValidLabelKey(k) || !isValidLabelValue(v) {
+		if !isQualifiedName(k) || !isValidLabelValue(v) {
 			delete(imageLabels, k)
 		}
 	}
@@ -120,11 +123,39 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, string(response))
 }
 
-func isValidLabelKey(value string) bool {
-	if len(value) > dNS1123LabelMaxLength {
+func isDNS1123Subdomain(value string) bool {
+	if len(value) > dNS1123SubdomainMaxLength {
 		return false
 	}
-	if !dns1123LabelRegexp.MatchString(value) {
+	if !dns1123SubdomainRegexp.MatchString(value) {
+		return false
+	}
+	return true
+}
+
+func isQualifiedName(value string) bool {
+	parts := strings.Split(value, "/")
+	var name string
+	switch len(parts) {
+	case 1:
+		name = parts[0]
+	case 2:
+		var prefix string
+		prefix, name = parts[0], parts[1]
+		if len(prefix) == 0 {
+			return false
+		} else {
+			return isDNS1123Subdomain(prefix)
+		}
+	default:
+		return false
+	}
+	if len(name) == 0 {
+		return false
+	} else if len(name) > qualifiedNameMaxLength {
+		return false
+	}
+	if !qualifiedNameRegexp.MatchString(name) {
 		return false
 	}
 	return true
