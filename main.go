@@ -7,7 +7,8 @@ import (
 	"github.com/buger/jsonparser"
 	"github.com/gorilla/mux"
 	"github.com/heroku/docker-registry-client/registry"
-	parser "github.com/novln/docker-parser"
+	"github.com/novln/docker-parser"
+	"github.com/patrickmn/go-cache"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -28,13 +29,17 @@ const (
 )
 
 var (
+	labelCache         = cache.New(5*time.Minute, 10*time.Minute)
 	dns1123LabelRegexp = regexp.MustCompile("^" + dns1123LabelFmt + "$")
 	labelValueRegexp   = regexp.MustCompile("^" + labelValueFmt + "$")
 	registryClients    = map[string]*registry.Registry{}
 )
 
 func getImageLabels(podImage string) (map[string]string, error) {
-	image, err := parser.Parse(podImage)
+	if x, found := labelCache.Get(podImage); found {
+		return x.(map[string]string), nil
+	}
+	image, err := dockerparser.Parse(podImage)
 	if err != nil {
 		return nil, err
 	}
@@ -54,13 +59,17 @@ func getImageLabels(podImage string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return getMap(layer, "config", "Labels")
+	labels, err := getMap(layer, "config", "Labels")
+	if err != nil {
+		log.Println("no label found for", podImage)
+	}
+	labelCache.Set(podImage, labels, cache.DefaultExpiration)
+	return labels, nil
 }
 
 func getMap(data []byte, keys ...string) (map[string]string, error) {
 	raw, _, _, err := jsonparser.Get(data, keys...)
 	if err != nil {
-		log.Println(string(data))
 		return nil, fmt.Errorf("error getting %v %v", keys, err)
 	}
 	var m map[string]string
