@@ -39,20 +39,19 @@ var (
 )
 
 func getImageLabels(podImage string) (map[string]string, error) {
-	if x, found := labelCache.Get(podImage); found {
-		return x.(map[string]string), nil
-	}
 	image, err := dockerparser.Parse(podImage)
 	if err != nil {
 		return nil, err
 	}
 	hub, ok := registryClients[image.Registry()]
 	if !ok {
+		log.Println("no credential for registry", image.Registry(), "skipping resolution")
 		return map[string]string{}, nil
 	}
 	manifest, err := hub.ManifestV2(image.ShortName(), image.Tag())
 	if err != nil {
-		return nil, err
+		log.Println(err)
+		return map[string]string{}, nil
 	}
 	reader, err := hub.DownloadBlob(image.ShortName(), manifest.Config.Digest)
 	if reader != nil {
@@ -65,9 +64,20 @@ func getImageLabels(podImage string) (map[string]string, error) {
 	labels, err := getMap(layer, "config", "Labels")
 	if err != nil {
 		log.Println("no label found for", podImage)
+		return map[string]string{}, nil
 	}
-	labelCache.Set(podImage, labels, cache.DefaultExpiration)
 	return labels, nil
+}
+
+func getImageLabelsWithCache(podImage string) (map[string]string, error) {
+	if x, found := labelCache.Get(podImage); found {
+		return x.(map[string]string), nil
+	}
+	labels, err := getImageLabels(podImage)
+	if labels != nil {
+		labelCache.Set(podImage, labels, cache.DefaultExpiration)
+	}
+	return labels, err
 }
 
 func getMap(data []byte, keys ...string) (map[string]string, error) {
@@ -98,7 +108,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Get labels
-	imageLabels, err := getImageLabels(podImage)
+	imageLabels, err := getImageLabelsWithCache(podImage)
 	if err != nil {
 		log.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
