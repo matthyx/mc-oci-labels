@@ -8,9 +8,9 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/heroku/docker-registry-client/registry"
 	"github.com/novln/docker-parser"
-	"github.com/patrickmn/go-cache"
 	"io/ioutil"
 	"log"
+	"mc-oci-labels/cache"
 	"net/http"
 	"os"
 	"regexp"
@@ -73,10 +73,12 @@ func getImageLabelsWithCache(podImage string) (map[string]string, error) {
 	if x, found := labelCache.Get(podImage); found {
 		return x.(map[string]string), nil
 	}
+	labelCache.Lock()
 	labels, err := getImageLabels(podImage)
 	if labels != nil {
-		labelCache.Set(podImage, labels, cache.DefaultExpiration)
+		labelCache.SetNoLock(podImage, labels, cache.DefaultExpiration)
 	}
+	labelCache.Unlock()
 	return labels, err
 }
 
