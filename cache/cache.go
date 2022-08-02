@@ -11,7 +11,7 @@ type Item struct {
 	Expiration int64
 }
 
-// Returns true if the item has expired.
+// Expired returns true if the item has expired.
 func (item Item) Expired() bool {
 	if item.Expiration == 0 {
 		return false
@@ -20,11 +20,6 @@ func (item Item) Expired() bool {
 }
 
 const (
-	// For use with functions that take an expiration time.
-	NoExpiration time.Duration = -1
-	// For use with functions that take an expiration time. Equivalent to
-	// passing in the same expiration duration as was given to New() or
-	// NewFrom() when the cache was created (e.g. 5 minutes.)
 	DefaultExpiration time.Duration = 0
 )
 
@@ -111,7 +106,7 @@ type keyAndValue struct {
 	value interface{}
 }
 
-// Delete all expired items from the cache.
+// DeleteExpired deletes all expired items from the cache.
 func (c *cache) DeleteExpired() {
 	var evictedItems []keyAndValue
 	now := time.Now().UnixNano()
@@ -188,7 +183,7 @@ func newCacheWithJanitor(de time.Duration, ci time.Duration, m map[string]Item) 
 	return C
 }
 
-// Return a new cache with a given default expiration duration and cleanup
+// New returns a new cache with a given default expiration duration and cleanup
 // interval. If the expiration duration is less than one (or NoExpiration),
 // the items in the cache never expire (by default), and must be deleted
 // manually. If the cleanup interval is less than one, expired items are not
