@@ -117,14 +117,15 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Filter labels
+	validLabels := make(map[string]string)
 	for k, v := range imageLabels {
-		if !isQualifiedName(k) || !isValidLabelValue(v) {
-			delete(imageLabels, k)
+		if isQualifiedName(k) && isValidLabelValue(v) {
+			validLabels[k] = v
 		}
 	}
 	// Return new labels
 	response, err := json.Marshal(map[string]map[string]string{
-		"labels": imageLabels,
+		"labels": validLabels,
 	})
 	if err != nil {
 		log.Println(err.Error())
