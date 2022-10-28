@@ -8,7 +8,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/heroku/docker-registry-client/registry"
 	"github.com/novln/docker-parser"
-	"io/ioutil"
+	"io"
 	"log"
 	"mc-oci-labels/cache"
 	"net/http"
@@ -57,7 +57,7 @@ func getImageLabels(podImage string) (map[string]string, error) {
 	if reader != nil {
 		defer reader.Close()
 	}
-	layer, err := ioutil.ReadAll(reader)
+	layer, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func getMap(data []byte, keys ...string) (map[string]string, error) {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	// Read pod
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
